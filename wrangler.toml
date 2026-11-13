@@ -1,3 +1,4 @@
+
 name = "panseek-xiaochoubuchou"
 main = ".output/server/index.mjs"
 compatibility_date = "2025-07-15"
@@ -7,3 +8,8 @@ workers_dev = true
 [assets]
 directory = ".output/public"
 binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "resource-search-db"
+database_id = "2a716a38-4291-465e-bf45-f751afc08d54"
