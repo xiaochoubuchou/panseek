@@ -36,7 +36,7 @@ jobs:
         run: npm run build
         env:
           # cloudflare-module 预设生成 Workers 兼容的 .output
-          NITRO_PRESET: cloudflare-module
+         NITRO_PRESET: cloudflare_module
           # 百度统计 ID（运行时注入，不在代码中硬编码）
           NUXT_PUBLIC_BAIDU_TONGJI_ID: ${{ secrets.NUXT_PUBLIC_BAIDU_TONGJI_ID }}
           # 搜索密码门禁（空值 = 跳过验证）
