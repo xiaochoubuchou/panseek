@@ -52,10 +52,12 @@ const PRIORITY_KEYWORDS = ["合集", "系列", "全", "完", "最新", "附", "c
 
 interface ResultScore {
   result: SearchResult;
-  timeScore: number;
+  /** 时间分层：0=近7天，1=8-30天，2=31-90天，3=90天以前，4=时间未知 */
+  timeBucket: number;
+  /** 可解析且不晚于当前时间的时间戳；未知/异常时间为 null */
+  timestamp: number | null;
   keywordScore: number;
   pluginScore: number;
-  totalScore: number;
 }
 
 // ============ 缓存键生成 (对应 cache_key.go) ============
@@ -172,24 +174,41 @@ function getPluginLevelScore(
 }
 
 /**
- * 计算时间得分
- * 直接翻译自 pansou/service/search_service.go calculateTimeScore
+ * 将来源提供的时间解析为可信时间戳。
+ * 当前只有 datetime 一个字段，无法判断它究竟是发布时间还是收录时间；
+ * 因此这里只按“来源提供的时间”排序，不把它擅自标注为发布时间。
+ * 无效时间和明显晚于当前时间的未来时间均视为未知。
  */
-function calculateTimeScore(datetime: string): number {
-  if (!datetime) return 0;
-  const dt = new Date(datetime);
-  if (isNaN(dt.getTime())) return 0;
+function getValidTimestamp(datetime?: string): number | null {
+  if (!datetime || typeof datetime !== "string") return null;
+  const value = datetime.trim();
+  if (!value) return null;
 
-  const now = Date.now();
-  const daysDiff = (now - dt.getTime()) / (1000 * 60 * 60 * 24);
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return null;
 
-  if (daysDiff <= 1) return 500;
-  if (daysDiff <= 3) return 400;
-  if (daysDiff <= 7) return 300;
-  if (daysDiff <= 30) return 200;
-  if (daysDiff <= 90) return 100;
-  if (daysDiff <= 365) return 50;
-  return 20;
+  // 允许最多5分钟的时钟误差；更晚的时间视为异常，避免被误判为最新。
+  if (timestamp > Date.now() + 5 * 60 * 1000) return null;
+  return timestamp;
+}
+
+/**
+ * 时间分层排序：
+ * 0：最近7天；1：最近8～30天；2：最近31～90天；
+ * 3：90天以前；4：时间未知（排在所有有明确时间的结果之后）。
+ */
+function getTimeBucket(datetime?: string): {
+  bucket: number;
+  timestamp: number | null;
+} {
+  const timestamp = getValidTimestamp(datetime);
+  if (timestamp === null) return { bucket: 4, timestamp: null };
+
+  const daysDiff = Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
+  if (daysDiff <= 7) return { bucket: 0, timestamp };
+  if (daysDiff <= 30) return { bucket: 1, timestamp };
+  if (daysDiff <= 90) return { bucket: 2, timestamp };
+  return { bucket: 3, timestamp };
 }
 
 /**
@@ -207,8 +226,9 @@ function getKeywordPriority(title: string): number {
 }
 
 /**
- * 按综合得分排序结果
- * 直接翻译自 pansou/service/search_service.go sortResultsByTimeAndKeywords
+ * 按时间层级、关键词相关性和来源优先级排序。
+ * 时间层级是第一排序条件，插件等级不能再压过明显更新的资源。
+ * 同一时间层级内，再比较关键词优先级、来源优先级和具体时间。
  */
 function sortResultsByTimeAndKeywords(
   results: SearchResult[],
@@ -216,14 +236,32 @@ function sortResultsByTimeAndKeywords(
 ): void {
   const scores: ResultScore[] = results.map((result) => {
     const source = getResultSource(result);
-    const timeScore = calculateTimeScore(result.datetime);
-    const keywordScore = getKeywordPriority(result.title);
+    const { bucket: timeBucket, timestamp } = getTimeBucket(result.datetime);
+    const keywordScore = getKeywordPriority(result.title || "");
     const pluginScore = getPluginLevelScore(source, pluginManager);
-    const totalScore = timeScore + keywordScore + pluginScore;
-    return { result, timeScore, keywordScore, pluginScore, totalScore };
+    return { result, timeBucket, timestamp, keywordScore, pluginScore };
   });
 
-  scores.sort((a, b) => b.totalScore - a.totalScore);
+  scores.sort((a, b) => {
+    // 首先严格按时间分层：近7天 > 8～30天 > 31～90天 > 更早 > 未知。
+    if (a.timeBucket !== b.timeBucket) {
+      return a.timeBucket - b.timeBucket;
+    }
+
+    // 同一时间层级内，优先展示关键词更匹配、来源等级更高的结果。
+    if (a.keywordScore !== b.keywordScore) {
+      return b.keywordScore - a.keywordScore;
+    }
+    if (a.pluginScore !== b.pluginScore) {
+      return b.pluginScore - a.pluginScore;
+    }
+
+    // 同层级、同相关性时，具体时间较新的排前面；未知时间保持稳定顺序。
+    if (a.timestamp !== null && b.timestamp !== null) {
+      return b.timestamp - a.timestamp;
+    }
+    return 0;
+  });
 
   for (let i = 0; i < scores.length; i++) {
     results[i] = scores[i].result;
@@ -300,11 +338,15 @@ function mergeSearchResults(
 
   const merged = Array.from(resultMap.values());
 
-  // 按时间排序（最新的在前）
+  // 按统一时间层级排序；时间未知的结果排在90天以前的结果之后。
   merged.sort((a, b) => {
-    const ta = a.datetime ? new Date(a.datetime).getTime() : 0;
-    const tb = b.datetime ? new Date(b.datetime).getTime() : 0;
-    return tb - ta;
+    const ta = getTimeBucket(a.datetime);
+    const tb = getTimeBucket(b.datetime);
+    if (ta.bucket !== tb.bucket) return ta.bucket - tb.bucket;
+    if (ta.timestamp !== null && tb.timestamp !== null) {
+      return tb.timestamp - ta.timestamp;
+    }
+    return 0;
   });
 
   return merged;
@@ -931,18 +973,9 @@ export class SearchService {
     // 按综合得分排序 (对应 search_service.go sortResultsByTimeAndKeywords)
     sortResultsByTimeAndKeywords(allResults, this.pluginManager);
 
-    // 过滤结果：只保留有时间/有优先关键词/高等级插件的结果
-    // 直接翻译自 search_service.go L477-L486
-    const filteredForResults: SearchResult[] = [];
-    for (const result of allResults) {
-      const source = getResultSource(result);
-      const pluginLevel = getPluginLevelBySource(source, this.pluginManager);
-      const hasTime = !!result.datetime;
-      const keywordPrio = getKeywordPriority(result.title);
-      if (hasTime || keywordPrio > 0 || pluginLevel <= 2) {
-        filteredForResults.push(result);
-      }
-    }
+    // 不因缺少时间字段或插件等级较低而丢弃搜索结果。
+    // 时间未知的资源会在排序时排在90天以前的资源之后，但仍保留在结果中。
+    const filteredForResults: SearchResult[] = allResults;
 
     // 合并链接按网盘类型分组
     let mergedLinks = this.mergeResultsByType(
@@ -1528,13 +1561,14 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
         const canonicalKey = getCanonicalUrlKey(link.url);
         const existingLink = uniqueLinks.get(canonicalKey);
         if (existingLink) {
-          const existingTime = existingLink.datetime
-            ? new Date(existingLink.datetime).getTime()
-            : 0;
-          const newTime = linkDatetime
-            ? new Date(linkDatetime).getTime()
-            : 0;
-          if (newTime > existingTime) {
+          const existingTime = getValidTimestamp(existingLink.datetime);
+          const newTime = getValidTimestamp(linkDatetime);
+          // 有明确有效时间的版本优先；两者都有时间时保留较新的版本；
+          // 两者都未知时保留先出现的记录，避免无依据地覆盖。
+          if (
+            newTime !== null &&
+            (existingTime === null || newTime > existingTime)
+          ) {
             uniqueLinks.set(canonicalKey, mergedLink);
           }
         } else {
@@ -1559,6 +1593,18 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
         }
       }
     }
+
+    // 去重后再次按时间层级排序，确保每个网盘分组中的链接也遵循同一规则。
+    // 时间未知的链接排在90天以前的链接之后。
+    orderedLinks.sort((a, b) => {
+      const ta = getTimeBucket(a.datetime);
+      const tb = getTimeBucket(b.datetime);
+      if (ta.bucket !== tb.bucket) return ta.bucket - tb.bucket;
+      if (ta.timestamp !== null && tb.timestamp !== null) {
+        return tb.timestamp - ta.timestamp;
+      }
+      return 0;
+    });
 
     // 将有序链接按类型分组
     for (const mergedLink of orderedLinks) {
