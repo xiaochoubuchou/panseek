@@ -759,6 +759,18 @@ function getCanonicalUrlKey(url: string): string {
   return url;
 }
 
+
+/**
+ * 搜索源请求超时异常
+ * 用于区分正常返回空结果和请求超时
+ */
+class SearchTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`搜索源请求超时：${timeoutMs}ms`);
+    this.name = "SearchTimeoutError";
+  }
+}
+
 // ============ SearchService 主类 ============
 
 export interface SearchServiceOptions {
@@ -1113,14 +1125,13 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
         const result = await safeExecute(
           () =>
             this.withTimeout<SearchResult[]>(
-              fetchTgChannelPosts(channel, keyword, {
-                limitPerChannel,
-                signal: mergedSignal,
-              }),
-              timeoutMs,
-              [],
-              controller
-            ),
+        fetchTgChannelPosts(channel, keyword, {
+        limitPerChannel,
+         signal: mergedSignal,
+          }),
+          timeoutMs,
+          controller
+          ),
           []
         );
         return result;
@@ -1238,9 +1249,8 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
           const currentResults = await this.withTimeout<SearchResult[]>(
             plugin.search(query, { ...ext, signal: mergedSignal }),
             timeoutMs,
-            [],
             controller
-          );
+            );
 
           results = mergeSearchResults(results, currentResults || []);
 
@@ -1252,8 +1262,20 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
           }
         }
 
+       
+        // 用户主动取消搜索，不应记为插件故障
+        if (signal?.aborted) {
+          return results;
+        }
+
         const responseTime = Date.now() - startTime;
-        this.healthChecker.recordSuccess(pluginName, responseTime);
+
+        // 只有真正完成的请求才记录成功
+        // 正常返回0条也属于成功
+        this.healthChecker.recordSuccess(
+          pluginName,
+          responseTime
+        );
 
         loggers.search.debug("单插件完成", {
           plugin: pluginName,
@@ -1265,19 +1287,29 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
 
         return results;
       } catch (error) {
+        // 用户主动取消，不累计插件失败次数
+        if (signal?.aborted) {
+          return [];
+        }
+
         const errorMs = Date.now() - startTime;
+
         this.healthChecker.recordFailure(pluginName);
 
         loggers.search.debug("单插件失败", {
           plugin: pluginName,
           ms: errorMs,
-          error: error instanceof Error ? error.message : String(error),
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error),
+          timeout: error instanceof SearchTimeoutError,
           keyword,
         });
 
         throw error;
       }
-    });
+    }); // 结束 available.map()
 
     // 插件搜索使用更高并发：每个插件是独立的外部 HTTP 请求，可以安全并发
     // 最少 20 并发，最多不超过 available 数量
@@ -1312,27 +1344,48 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
     return merged;
   }
 
+  
   private withTimeout<T>(
     promise: Promise<T>,
     ms: number,
-    fallback: T,
     controller?: AbortController
   ): Promise<T> {
     if (!ms || ms <= 0) return promise;
-    let timeoutHandle: any;
-    const timeoutPromise = new Promise<T>((resolve) => {
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+
+    // 如果超时触发了 AbortController，
+    // 将底层请求产生的 AbortError 统一转换成超时异常
+    const guardedPromise = promise.catch((error) => {
+      if (timedOut) {
+        throw new SearchTimeoutError(ms);
+      }
+      throw error;
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
+
         if (controller && !controller.signal.aborted) {
           controller.abort();
         }
-        resolve(fallback);
+
+        reject(new SearchTimeoutError(ms));
       }, ms);
     });
+
     return Promise.race([
-      promise.finally(() => clearTimeout(timeoutHandle)),
+      guardedPromise,
       timeoutPromise,
-    ]) as Promise<T>;
+    ]).finally(() => {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
+    });
   }
+
 
   /**
    * 合并链接按网盘类型分组
