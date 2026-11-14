@@ -142,8 +142,8 @@ export class PansousuoPlugin extends BaseAsyncPlugin {
     const pageLimit = parsePageLimit(ext);
     const collected: SearchResult[] = [];
     const seenUrls = new Set<string>();
-    let totalPages = 1;
-    let fetchedPages = 0;
+    let totalPages = pageLimit;
+   
 
     for (let page = 1; page <= Math.min(pageLimit, totalPages); page += 1) {
       if (signal?.aborted) {
