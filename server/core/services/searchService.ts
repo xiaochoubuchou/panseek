@@ -1311,12 +1311,12 @@ Math.min(concurrencyOverride ?? this.options.defaultConcurrency, 20)
       }
     }); // 结束 available.map()
 
-    // 插件搜索使用更高并发：每个插件是独立的外部 HTTP 请求，可以安全并发
-    // 最少 20 并发，最多不超过 available 数量
-    const pluginConcurrency = Math.min(
-      Math.max(concurrency, 20),
-      available.length
-    );
+    // 插件并发遵循本次搜索的有效并发配置，不再强制至少 20。
+    // 至少使用 1 个并发槽位；实际任务数为 0 时，p-limit 仍可安全处理空任务数组。
+    const requestedConcurrency = Number.isFinite(concurrency)
+      ? Math.floor(concurrency)
+      : 1;
+    const pluginConcurrency = Math.max(1, requestedConcurrency);
 
     const resultsByPlugin = await this.runWithConcurrency(
       pluginPromises.map((promiseFactory) => async () => {
