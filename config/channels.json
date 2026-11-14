@@ -157,7 +157,7 @@
     "pansearch",
     "nyaa"
   ],
-  "defaultConcurrency": 20,
-  "pluginTimeoutMs": 4000,
-  "cacheTtlMinutes": 30
+  "defaultConcurrency": 12,
+  "pluginTimeoutMs": 10000,
+  "cacheTtlMinutes": 5
 }
