@@ -154,9 +154,10 @@
     "gimy100"
   ],
   "defaultPlugins": [
-    "pansearch",
-    "nyaa"
-  ],
+  "pansearch",
+  "nyaa",
+  "pansousuo"
+],
   "defaultConcurrency": 12,
   "pluginTimeoutMs": 10000,
   "cacheTtlMinutes": 5
