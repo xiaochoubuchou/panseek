@@ -3,6 +3,7 @@
  * 通过导入插件类并显式调用 registerGlobalPlugin，避免 Rollup 树摇
  */
 import { registerGlobalPlugin } from "./manager";
+import { PansousuoPlugin } from "./pansousuo";
 
 // 原有插件
 import { PansearchPlugin } from "./pansearch";
@@ -122,6 +123,9 @@ export function registerAllPlugins(): void {
   registerGlobalPlugin(new HubanPlugin());
   // registerGlobalPlugin(new Hdr4kPlugin()); // 端点死亡
   // registerGlobalPlugin(new Fox4kPlugin()); // 端点死亡
+
+    // PanSuoSuo 独立搜索 API
+  registerGlobalPlugin(new PansousuoPlugin());
 
   // 从 pansou 迁移的插件（端点死亡的已注释）
   // registerGlobalPlugin(new AhhhhfsPlugin()); // 端点死亡
