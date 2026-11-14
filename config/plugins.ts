@@ -34,6 +34,7 @@ export const ALL_PLUGIN_NAMES = [
   "clxiong",
   // 标准优先级插件（priority 3）
   "pan666",
+  "pansousuo",
   "thepiratebay",
   "hunhepan",
   "xiaozhang",
@@ -83,7 +84,7 @@ export const ALL_PLUGIN_NAMES = [
 ] as const;
 
 // 设置版本号 — 当 ALL_PLUGIN_NAMES 变化时递增，用于自动迁移老用户的 localStorage
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 // 网盘类型列表（对照 pansou 13 种网盘类型）
 export const CLOUD_TYPES = [
